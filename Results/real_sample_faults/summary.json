@@ -1,0 +1,26 @@
+[
+  {
+    "case": "Part2_Case1",
+    "p": 0.03,
+    "image_bytes": 5574493,
+    "injected_faults": 1,
+    "nonzero_offset_resume": false,
+    "sha256_verified": true
+  },
+  {
+    "case": "Part2_Case2",
+    "p": 0.2,
+    "image_bytes": 5574493,
+    "injected_faults": 26,
+    "nonzero_offset_resume": true,
+    "sha256_verified": true
+  },
+  {
+    "case": "Part2_Case2_Enhanced",
+    "p": 0.2,
+    "image_bytes": 5574493,
+    "injected_faults": 18,
+    "nonzero_offset_resume": true,
+    "sha256_verified": true
+  }
+]

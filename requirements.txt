@@ -1,0 +1,7 @@
+# Optional requirements for performance analysis and figure generation
+# Note: Core C servers/clients and Python orchestrator (lan.py, experiment.py)
+# require ONLY the standard C runtime (C11, POSIX, pthreads) and Python 3.10+ stdlib.
+
+matplotlib>=3.7.0
+reportlab>=3.6.0
+

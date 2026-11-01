@@ -1,0 +1,39 @@
+# Compiled C Binaries & Objects
+Part*/server
+Part*/client
+*.o
+*.out
+*.exe
+
+# Large Datasets & Client Download Outputs (do not bloat repository)
+raw-img/
+downloads/
+demo_dataset/
+
+# Python Virtual Environments & Bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDE & Personal System Specifics
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Transient Logs & Error Dumps
+*.log
+runner_error.txt
+SUBMISSION_STATUS.json
+
+# Submission Archives
+*.zip
+
+# Intermediate Raw Client Logs (keep summary.csv, environment.json, and plots)
+Results/*/raw/
+Results/client_B/
+Results/client_B_retry/

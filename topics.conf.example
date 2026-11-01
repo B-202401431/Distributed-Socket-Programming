@@ -1,0 +1,16 @@
+# Example topic-to-directory configuration file
+# Copy this file to your dataset root (e.g., raw-img/topics.conf)
+# Each non-comment line must be: <topic_name><TAB><relative_directory_path>
+# Lines starting with # are comments.
+
+cane	cane
+cavallo	cavallo
+elefante	elefante
+farfalla	farfalla
+gallina	gallina
+gatto	gatto
+mucca	mucca
+pecora	pecora
+ragno	ragno
+scoiattolo	scoiattolo
+

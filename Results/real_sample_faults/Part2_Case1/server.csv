@@ -1,0 +1,4 @@
+session,lane,topic,payload_sent,app_bytes_sent,app_bytes_received,connection_seconds,injected,complete
+0,0,-,0,0,0,0.000021562,0,0
+15479233900310555773,0,gatto,98304,98419,74,0.000480311,1,0
+15479233900310555773,0,gatto,5574493,5575293,766,0.005765188,0,1

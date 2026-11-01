@@ -1,0 +1,39 @@
+{
+  "topic": "cane",
+  "files": {
+    "image_00.bin": {
+      "size": 131072,
+      "sha256": "20f9d0908933f8ca614c41632dd07029d0f5f9ccc94a0268ce97b33b6c2963d9"
+    },
+    "image_01.bin": {
+      "size": 131072,
+      "sha256": "486a440926dc1dd2a1b609e974a8932b213b37af33683e8a0c37456b1b3869ad"
+    },
+    "image_02.bin": {
+      "size": 131072,
+      "sha256": "d11d9b59ce7b51b5b78c6660a61fc73c529bfa9153019020f0c2592fdadcca44"
+    },
+    "image_03.bin": {
+      "size": 131072,
+      "sha256": "b3c6c93787c594aaee49b46b2b5ce25780af40d7c93ac5f736543eaa8658513f"
+    },
+    "image_04.bin": {
+      "size": 131072,
+      "sha256": "e179a6671f7de499cdd37df3bdf9bb9c9dd49c1f49da5e4ac94cdc870f0e5bf2"
+    },
+    "image_05.bin": {
+      "size": 131072,
+      "sha256": "415d7f4d191068e14cc83d0809bce8c8a5695efee55e2d89acf878b0059742a2"
+    },
+    "image_06.bin": {
+      "size": 131072,
+      "sha256": "eb65b89b61f1d1d4e4e7376dbb2fa3ddeaf3c0a70dd0c23eb614af1596405728"
+    },
+    "image_07.bin": {
+      "size": 131072,
+      "sha256": "3691324c0b4f6384081ddcc6f8e29c3f368a437eb755c534ee289d9a5dd0f349"
+    }
+  },
+  "bytes": 1048576,
+  "blocks_64KiB": 16
+}

@@ -1,0 +1,2 @@
+session,connections,attempts,payload_received,useful_bytes,redundant_received,app_bytes_sent,app_bytes_received,seconds,goodput_MiB_s,success
+4991833610879135965,1,27,6395659,5574493,821166,2604,6399390,0.281353287,18.895286,1
