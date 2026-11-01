@@ -1,261 +1,254 @@
-# Fault-Tolerant Distributed File Transfer Protocol over TCP
+# Fault-Tolerant Topic-Based File Distribution System
 
-[![Language: C11](https://img.shields.io/badge/Language-C11-blue.svg)](https://en.wikipedia.org/wiki/C11_(C_standard_revision))
-[![Platform: Linux / WSL2](https://img.shields.io/badge/Platform-Linux%20%2F%20WSL2-orange.svg)](https://ubuntu.com/)
-[![Sockets: POSIX](https://img.shields.io/badge/Sockets-POSIX%20TCP-green.svg)](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/sys_socket.h.html)
-[![Concurrency: pthreads](https://img.shields.io/badge/Concurrency-pthreads-yellow.svg)](https://pubs.opengroup.org/onlinepubs/7908799/xsh/pthread.h.html)
-[![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
+**C11 · POSIX Sockets · pthreads · Linux / WSL2 · Python Orchestrator**
 
-A robust, high-performance, topic-based binary file distribution system built from scratch in **C11** using **POSIX TCP sockets** and **pthreads**. Features dynamic topic indexing, Big-Endian wire framing, Bernoulli fault injection, session checkpointing, and parallel multi-lane file resumption.
+An application-layer file distribution system written in C11 using POSIX TCP sockets and threads. It transfers categorized collections of binary files ("topics") over TCP, with an in-memory session checkpoint mechanism designed to survive mid-stream network disconnections without re-transmitting already-delivered data.
 
 ---
 
-## 📌 Table of Contents
+## Table of Contents
 
-- [Overview & Problem Statement](#-overview--problem-statement)
-- [Key Features](#-key-features)
-- [Networking & Systems Concepts](#-networking--systems-concepts)
-- [System Architecture](#-system-architecture)
-- [Protocol & Working Mechanism](#-protocol--working-mechanism)
-- [Client-Server Communication Flow](#-client-server-communication-flow)
-- [Repository Structure](#-repository-structure)
-- [Prerequisites & Build Guide](#-prerequisites--build-guide)
-- [Running on a Single Linux Computer](#-running-on-a-single-linux-computer)
-- [Running Across Three Physical Linux Computers](#-running-across-three-physical-linux-computers)
-- [Configuration & Troubleshooting](#-configuration--troubleshooting)
-- [Evaluation & Benchmark Results](#-evaluation--benchmark-results)
-- [Visual Screenshots & Logs](#-visual-screenshots--logs)
-- [Future Enhancements](#-future-enhancements)
-- [Academic Context & Contributors](#-academic-context--contributors)
-
----
-
-## 📖 Overview & Problem Statement
-
-In distributed systems, delivering large multi-file datasets over lossy or unpredictable networks presents two critical challenges:
-1. **Redundant Retransmission**: A transient network disconnect near the end of a multi-gigabyte batch typically forces traditional transfer utilities to re-transmit the entire dataset from byte zero.
-2. **Bandwidth Underutilization**: Single-threaded TCP streams fail to saturate available network bandwidth when processing many small files due to per-file handshakes and round-trip latency.
-
-This project addresses these challenges by implementing a custom **Application-Layer Protocol** with four progressive engineering stages:
-- **Part 1 (Baseline)**: High-speed multithreaded binary file transfer without fault tolerance.
-- **Part 2 Case 1 (Restart Baseline)**: Fault-injection model with clean-slate restart.
-- **Part 2 Case 2 (Stateful Checkpoint Resume)**: In-memory session tracking that resumes interrupted files directly at the exact confirmed 64 KiB block offset.
-- **Part 2 Case 2 Enhanced (Parallel Multi-Lane Resume)**: Striped multi-connection streaming across $K$ parallel TCP lanes with independent per-lane recovery.
+- [Overview & Problem Statement](#overview--problem-statement)
+- [Key Features](#key-features)
+- [Systems & Networking Concepts](#systems--networking-concepts)
+- [Architecture](#architecture)
+- [Protocol Specification](#protocol-specification)
+- [Communication Flow](#communication-flow)
+- [Repository Structure](#repository-structure)
+- [Build Instructions](#build-instructions)
+- [Running on a Single Computer (Loopback)](#running-on-a-single-computer-loopback)
+- [Running Across Three Computers (LAN / Wi-Fi)](#running-across-three-computers-lan--wi-fi)
+- [Configuration & Runtime Tuning](#configuration--runtime-tuning)
+- [Experimental Evaluation & Results](#experimental-evaluation--results)
+- [Sample Terminal Output](#sample-terminal-output)
+- [Technical Considerations & Future Work](#technical-considerations--future-work)
+- [Academic Context & Attribution](#academic-context--attribution)
 
 ---
 
-## ✨ Key Features
+## Overview & Problem Statement
 
-- **Topic-Based Cataloging**: Automatic startup discovery and FNV-1a hashing of topic directories; rejects mid-transfer filesystem modifications.
-- **Custom Wire Serialization**: Combines ASCII control lines with Big-Endian 64-bit unsigned binary framing for chunks and lengths.
-- **Controlled Bernoulli Fault Injection**: Server-side per-block probabilistic connection drops simulating dirty network cuts.
-- **Zero-Corruption Resumption**: Atomic offset tracking with client-side `ftruncate` sanitization before write resumption.
-- **Striped Multi-Lane Streaming**: Round-robin file distribution ($i \pmod K$) over persistent parallel TCP lanes.
-- **Automated Distributed Test Harness**: Python-based HTTP coordinator and client agents for synchronized multi-node experiments with end-to-end SHA-256 verification.
-- **Zero Third-Party Dependencies**: Core server and client require strictly the C11 runtime and POSIX APIs; test harness uses the Python standard library.
+Standard batch file transfer over TCP can be inefficient when moving large collections of files over unreliable local or wireless networks:
+1. **Redundant Transfer on Disconnect**: When a network connection drops mid-batch, basic client-server protocols restart from byte zero, re-transmitting gigabytes of data that were already received and written to disk.
+2. **Network Bandwidth Underutilization**: Single-threaded TCP transfers suffer throughput penalties when transmitting thousands of small files, as latency delays per-file negotiation.
+
+This project implements an application-level protocol with four progressive operational modes:
+- **Part 1 (Baseline)**: Multithreaded file transfer without fault injection or recovery logic.
+- **Part 2 Case 1 (Restart Baseline)**: Server injects mid-block disconnections; client discards partial downloads and restarts from byte zero.
+- **Part 2 Case 2 (Checkpoint Resume)**: Server tracks per-session progress in an in-memory session table; client reconnects and resumes from the last confirmed file and block offset.
+- **Part 2 Case 2 Enhanced (Parallel Multi-Lane Resume)**: Client distributes files across $K$ parallel TCP lanes ($i \pmod K$), each with its own independent session checkpoint and retry loop.
 
 ---
 
-## 🛠 Networking & Systems Concepts
+## Key Features
 
-| Concept | Implementation Details | Location |
+- **Topic Directory Indexing**: Scans and indexes subdirectories as distinct topics; computes a 64-bit FNV-1a hash over sorted filenames, sizes, and modification timestamps.
+- **Dataset Consistency Check**: Compares the topic manifest hash on every reconnection; aborts gracefully if files on disk were modified mid-transfer.
+- **Hybrid Wire Framing**: Uses ASCII newline-terminated lines for control commands (`GET`, `OK`, `START`, `READY`, `FILE`, `DONE`, `BYE`) and 64-bit big-endian unsigned integers for metadata and block offsets.
+- **Bernoulli Fault Injection**: Server-side engine performs independent Bernoulli trials ($P = p$) before sending each payload chunk (up to 64 KiB), truncating the block and closing the socket mid-stream.
+- **Zero-Corruption Resumption**: The client truncates local files to the confirmed offset using `ftruncate()` before appending recovered data, preventing file corruption from unacknowledged partial blocks.
+- **Striped Parallel Lanes**: In Enhanced mode, up to 16 concurrent worker threads run independent TCP connections to saturate network links.
+- **Distributed Test Harness**: Python coordinator and client agent scripts automate multi-node LAN experiments, clock synchronization, and SHA-256 integrity verification.
+
+---
+
+## Systems & Networking Concepts
+
+| Concept | Implementation in Code | File Reference |
 |---|---|---|
 | **Socket Lifecycle** | `socket()`, `bind()`, `listen()`, `accept()`, `connect()` | `server.c`, `client.c` |
-| **Nagle Optimization** | `TCP_NODELAY` enabled to minimize latency on small control lines | `common.h` (`socket_options`) |
-| **Socket Timeouts** | `SO_RCVTIMEO` and `SO_SNDTIMEO` set to prevent indefinite blocking | `common.h` (`socket_options`) |
-| **Socket Port Reuse** | `SO_REUSEADDR` for immediate server rebinding without `TIME_WAIT` halts | `server.c` |
-| **Signal Safety** | `MSG_NOSIGNAL` flag on all `send()` calls to suppress fatal `SIGPIPE` | `common.h` (`send_all`) |
-| **Interrupt Handling** | Explicit `EINTR` retry loops on all socket and file system calls | `common.h` |
-| **Path Traversal Shield** | `safe_name()` rejects path separators (`/`), null bytes, `..`, and control chars | `common.h` |
-| **Symlink Protection** | `O_NOFOLLOW` and `AT_SYMLINK_NOFOLLOW` on all directory lookups | `server.c`, `client.c` |
-| **Atomic File Checkpoint** | `lseek()` + `ftruncate()` before partial block resumption | `client.c` (`transfer`) |
-| **Thread Synchronization** | POSIX mutexes (`pthread_mutex_t`) for session state, logging, and console UI | `server.c`, `client.c` |
-| **Thread-Local Metrics** | `_Thread_local` counters for lock-free per-thread byte accounting | `common.h` |
+| **Nagle Algorithm Control** | `setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, ...)` disables Nagle buffering | `common.h` (`socket_options`) |
+| **Socket Timeouts** | `SO_RCVTIMEO` and `SO_SNDTIMEO` set via `struct timeval` to avoid hung connections | `common.h` (`socket_options`) |
+| **Port Rebinding** | `SO_REUSEADDR` permits fast server restarts without waiting for `TIME_WAIT` | `server.c` (`main`) |
+| **Signal Handling** | `MSG_NOSIGNAL` flag on `send()` prevents `SIGPIPE` termination on broken pipe | `common.h` (`send_all`) |
+| **Interrupted System Calls** | While-loops checking `errno == EINTR` around all read/write/send/recv calls | `common.h` |
+| **Directory-Relative I/O** | `openat()`, `fstatat()`, `mkdirat()` protect against path traversal and races | `server.c`, `client.c` |
+| **Symlink Protection** | `O_NOFOLLOW` and `AT_SYMLINK_NOFOLLOW` refuse traversal through symbolic links | `server.c`, `client.c` |
+| **File Offset Management** | `lseek(..., SEEK_SET)` and `ftruncate()` synchronize file pointer before resume | `client.c` (`transfer`) |
+| **Concurrency & Synchronization** | Thread per connection (`pthread_create`), state locked via `pthread_mutex_t` | `server.c`, `client.c` |
+| **Thread-Local Counters** | `_Thread_local uint64_t wire_sent, wire_received` track per-thread wire bytes | `common.h` |
 
 ---
 
-## 🏗 System Architecture
+## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph "Server Node (PC A)"
-        S_SOCK["POSIX TCP Server (Port 9000)"]
-        S_INDEX["Dataset Indexer & FNV-1a Hasher"]
-        S_SESS["Thread-Safe Session Table (Max 4096)"]
-        S_FAULT["Bernoulli Fault Injector (p in [0, 1])"]
+    subgraph "Server Machine (PC A)"
+        S_SOCK["C TCP Server (Port 9000)"]
+        S_TOPIC["Topic Scanner & FNV-1a Hasher"]
+        S_STATE["Session Table (Max 4096 entries)"]
+        S_FAULT["Bernoulli Fault Injector (Probability p)"]
         
-        S_INDEX --> S_SOCK
-        S_SESS <--> S_SOCK
+        S_TOPIC --> S_SOCK
+        S_STATE <--> S_SOCK
         S_FAULT --> S_SOCK
     end
 
-    subgraph "Distributed Coordinator"
+    subgraph "Coordinator Process"
         COORD["Python HTTP Orchestrator (Port 9101)"]
-        CLOCK["Clock Offset Synchronizer"]
+        CLOCK["Clock Offset Estimator"]
         COORD --> CLOCK
         COORD -.-> S_SOCK
     end
 
-    subgraph "Remote Client Node (PC B)"
-        C_AGENT_B["Python Test Agent B"]
-        C_CLI_B1["Client Lane 0 (Thread 0)"]
-        C_CLI_B2["Client Lane 1 (Thread 1)"]
-        C_AGENT_B --> C_CLI_B1
-        C_AGENT_B --> C_CLI_B2
+    subgraph "Client Machine 1 (PC B)"
+        AGENT_B["Python Agent B"]
+        CLI_B1["Client Lane 0"]
+        CLI_B2["Client Lane 1"]
+        AGENT_B --> CLI_B1
+        AGENT_B --> CLI_B2
     end
 
-    subgraph "Remote Client Node (PC C)"
-        C_AGENT_C["Python Test Agent C"]
-        C_CLI_C1["Client Lane 0 (Thread 0)"]
-        C_CLI_C2["Client Lane 1 (Thread 1)"]
-        C_AGENT_C --> C_CLI_C1
-        C_AGENT_C --> C_CLI_C2
+    subgraph "Client Machine 2 (PC C)"
+        AGENT_C["Python Agent C"]
+        CLI_C1["Client Lane 0"]
+        CLI_C2["Client Lane 1"]
+        AGENT_C --> CLI_C1
+        AGENT_C --> CLI_C2
     end
 
-    C_CLI_B1 == "TCP 9000 (Lane 0)" ==> S_SOCK
-    C_CLI_B2 == "TCP 9000 (Lane 1)" ==> S_SOCK
-    C_CLI_C1 == "TCP 9000 (Lane 0)" ==> S_SOCK
-    C_CLI_C2 == "TCP 9000 (Lane 1)" ==> S_SOCK
+    CLI_B1 == "TCP 9000 (Lane 0)" ==> S_SOCK
+    CLI_B2 == "TCP 9000 (Lane 1)" ==> S_SOCK
+    CLI_C1 == "TCP 9000 (Lane 0)" ==> S_SOCK
+    CLI_C2 == "TCP 9000 (Lane 1)" ==> S_SOCK
 
-    C_AGENT_B -. "HTTP Control (9101)" .-> COORD
-    C_AGENT_C -. "HTTP Control (9101)" .-> COORD
+    AGENT_B -. "HTTP Control (9101)" .-> COORD
+    AGENT_C -. "HTTP Control (9101)" .-> COORD
 ```
 
 ---
 
-## 🔄 Protocol & Working Mechanism
+## Protocol Specification
 
-### 1. Catalog Discovery & Integrity Manifest
-When a client connects and sends `GET <topic>\n`, the server returns:
-```text
-OK <file_count> <manifest_hash> <total_bytes>\n
-```
-Followed by sequential entries: `[8-byte length][filename][8-byte size]`.
-The manifest hash is generated using 64-bit FNV-1a across all sorted file names, sizes, and modification timestamps. If any file is modified on disk during an active transfer, the server detects the mismatch and aborts the session with `ERR dataset_changed_restart_server`.
+The protocol uses ASCII newline-terminated strings for signaling and big-endian 64-bit integers for binary data and offsets.
 
-### 2. Checkpoint Handshake
-The client initiates transfer with:
-```text
-START <session_id> <lane> <lanes> <file_index> <byte_offset> <manifest_hash>\n
-```
-The server validates that:
-- The session hash matches the current dataset snapshot.
-- The requested `file_index` belongs to the requesting `lane` ($index \pmod{lanes} = lane$).
-- The requested `byte_offset` does not exceed the known file size.
+### 1. Control Commands (ASCII `\n`-delimited)
 
-### 3. Chunk Streaming & Offset Acknowledgment
-Data is transmitted in discrete blocks of up to **64 KiB** (`CHUNK = 65536`). After each block, the client writes the payload to disk using `write_all()`, updates its confirmed byte counter, and returns an 8-byte big-endian acknowledgment containing the updated offset.
+| Command | Direction | Parameters | Description |
+|---|---|---|---|
+| `GET` | Client → Server | `<topic>` | Requests the file manifest for a topic. |
+| `OK` | Server → Client | `<file_count> <hash> <total_bytes>` | Manifest header response. |
+| `ERR` | Server → Client | `<reason>` | Error notification (`unknown_topic`, `dataset_changed...`). |
+| `START` | Client → Server | `<session_id> <lane> <lanes> <idx> <offset> <hash>` | Requests transfer initiation or resumption from an offset. |
+| `READY` | Server → Client | *(None)* | Server confirms valid checkpoint and begins transmission. |
+| `FILE` | Server → Client | `<file_index> <byte_offset>` | Signals that a file transfer is beginning. |
+| `DONE` | Server → Client | *(None)* | Signals completion of all files for this lane. |
+| `BYE` | Client → Server | *(None)* | Clean termination acknowledgment from client. |
 
-### 4. Bernoulli Fault Disruption & Recovery
-Under Part 2, before transmitting each block, the server draws a pseudo-random value. With probability $p$:
-1. The server transmits half the chunk (`want / 2`).
-2. Immediately triggers `shutdown(fd, SHUT_RDWR)` and closes the file descriptor.
-3. The client receives an abrupt EOF or connection reset (`ECONNRESET`).
-4. **Case 1 Response**: Client unlinks all partial files and resets to index 0, offset 0.
-5. **Case 2 / Enhanced Response**: Client retains the exact confirmed `(file_index, byte_offset)`, reconnects, sends `START` with the confirmed offset, truncates any trailing dirty bytes with `ftruncate()`, and resumes without lost progress.
+### 2. Binary Framing (Big-Endian 64-bit Integers)
+
+- **Manifest Items**: For each file, server sends `put64(name_len)` $\rightarrow$ raw ASCII filename $\rightarrow$ `put64(file_size)`.
+- **Payload Chunks**: For each block, server sends `put64(chunk_len)` (up to 65,536 bytes) followed by chunk bytes. Client replies with `put64(confirmed_offset)` after successfully writing to disk.
+- **End-of-File**: A chunk size of `0` denotes EOF for the current file. The client acknowledges with `put64(file_size)`.
+
+Detailed framing rules, state transition tables, and mathematical formulas are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## 💬 Client-Server Communication Flow
+## Communication Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client (Worker Lane)
+    participant C as Client (Worker)
     participant S as Server Thread
 
-    Note over C,S: Handshake & Manifest Exchange
+    Note over C,S: Handshake & Manifest Discovery
     C->>S: "GET cane\n"
-    S->>C: "OK 200 14695981039346656037 10485760\n"
-    loop For each file
+    S->>C: "OK 8 14695981039346656037 1048576\n"
+    loop For each file in topic
         S->>C: [8B name_len] + [name bytes] + [8B file_size]
     end
 
-    Note over C,S: Checkpoint Negotiation
-    C->>S: "START 948271048 0 2 0 0 14695981039346656037\n"
+    Note over C,S: Checkpoint Initialization
+    C->>S: "START 1029384756 0 1 0 0 14695981039346656037\n"
     S->>C: "READY\n"
 
-    Note over C,S: Block Streaming (Up to 64 KiB)
-    loop Files assigned to Lane (i % 2 == 0)
+    Note over C,S: Block Streaming & Acknowledgments
+    loop For each file
         S->>C: "FILE 0 0\n"
-        S->>C: [8B chunk_size: 65536] + [65536 data bytes]
-        C->>S: [8B ack: 65536]
-        Note over S: [Fault Injected with probability p]
-        S--xC: Truncate block to 32768B and abruptly close socket!
+        S->>C: [8B chunk_size: 65536] + [65536 bytes data]
+        C->>S: [8B ack_offset: 65536]
         
-        Note over C,S: Seamless Resumption Handshake
-        C->>S: Reconnect -> "GET cane\n" -> "START 948271048 0 2 0 65536 <hash>\n"
-        S->>C: "READY\n"
-        S->>C: "FILE 0 65536\n"
-        S->>C: [8B chunk_size: remaining] + [remaining data bytes]
-        C->>S: [8B ack: file_size]
+        alt Fault Injected by Server (Probability p)
+            S--xC: Send 32768 bytes, then abruptly close socket
+            Note over C,S: Resumption Sequence
+            C->>S: Reconnect -> "GET cane\n"
+            S->>C: "OK ..." + manifest entries
+            C->>S: "START 1029384756 0 1 0 65536 <hash>\n"
+            S->>C: "READY\n"
+            S->>C: "FILE 0 65536\n"
+            S->>C: [8B chunk_size: remaining] + [remaining data bytes]
+            C->>S: [8B ack_offset: file_size]
+        end
+
         S->>C: [8B 0 (EOF sentinel)]
-        C->>S: [8B final ack]
+        C->>S: [8B ack: file_size]
     end
 
     S->>C: "DONE\n"
     C->>S: "BYE\n"
-    Note over C,S: Clean Termination
 ```
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
-├── Part1/                      # Baseline file transfer implementation
-│   ├── server.c                # Multi-threaded / single-threaded TCP server
-│   ├── client.c                # Client with ASCII progress rendering
-│   ├── common.h                # Core socket primitives, wire I/O & safe helpers
-│   ├── config.h                # Mode switch (#define CASE_MODE 0)
-│   └── Makefile                # Strict compiler flags (-Wall -Wextra -Werror)
+├── Part1/                      # Baseline file transfer (no fault injection)
+│   ├── server.c                # TCP server (single or multi-threaded)
+│   ├── client.c                # TCP client with terminal progress bar
+│   ├── common.h                # Socket helpers, wire I/O routines, data structures
+│   ├── config.h                # CASE_MODE = 0
+│   └── Makefile                # Compiles with -Wall -Wextra -Wpedantic -Werror
 │
-├── Part2_Case1/                # Clean restart under fault injection (CASE_MODE 1)
+├── Part2_Case1/                # Clean restart on failure (CASE_MODE = 1)
 │   ├── server.c / client.c / common.h / config.h / Makefile
 │
-├── Part2_Case2/                # Stateful checkpoint resumption (CASE_MODE 2)
+├── Part2_Case2/                # Stateful checkpoint resumption (CASE_MODE = 2)
 │   ├── server.c / client.c / common.h / config.h / Makefile
 │
-├── Part2_Case2_Enhanced/       # Parallel multi-lane resumption (CASE_MODE 3)
+├── Part2_Case2_Enhanced/       # Parallel multi-lane resumption (CASE_MODE = 3)
 │   ├── server.c / client.c / common.h / config.h / Makefile
 │
 ├── Tools/                      # Distributed testing and evaluation suite
-│   ├── experiment.py           # Core benchmark runner & SHA-256 integrity verifier
-│   ├── lan.py                  # HTTP distributed multi-PC coordinator & agent
-│   ├── network_check.py        # TCP connectivity preflight diagnostic probe
-│   ├── make_subset.py          # Subset extractor for local demos
-│   ├── plot_results.py         # Matplotlib chart generator
+│   ├── experiment.py           # Benchmark runner and SHA-256 verification library
+│   ├── lan.py                  # HTTP distributed orchestrator (coordinator and agent)
+│   ├── network_check.py        # Diagnostic two-port TCP connectivity probe
+│   ├── make_subset.py          # Extracts a small demonstration subset from a dataset
+│   ├── plot_results.py         # Matplotlib chart generator from summary.csv
 │   ├── test_server_startup.py  # Automated startup regression test suite
 │   └── windows/
-│       └── Setup-WSL-Network.ps1 # WSL2 NAT port-forwarding & firewall configuration
+│       └── Setup-WSL-Network.ps1 # PowerShell script for WSL2 port forwarding
 │
-├── docs/                       # Architectural documentation & technical specifications
-│   ├── ARCHITECTURE.md         # Deep-dive protocol specification
-│   ├── ACADEMIC_README.md      # Preserved original academic submission guide
-│   └── diagrams/               # Generated evaluation plots & figures
+├── docs/                       # Technical documentation and evaluation figures
+│   ├── ARCHITECTURE.md         # Detailed protocol framing and state machine specification
+│   ├── ACADEMIC_README.md      # Preserved original coursework README
+│   └── diagrams/               # Generated evaluation plots (goodput and overhead)
 │
-├── Results/                    # Benchmark measurement outputs
-│   └── local/                  # 60 loopback benchmark runs with summary.csv
+├── Results/                    # Experimental evaluation outputs
+│   ├── local/                  # 60-run loopback synthetic benchmark (summary.csv and charts)
+│   └── real_sample_faults/     # Verified sample fault traces under p=0.03 and p=0.20
 │
-├── screenshots/                # Demonstration logs and screenshots
-├── topics.conf.example         # Sample topic mapping configuration
+├── topics.conf.example         # Example topic-to-directory configuration mapping
 ├── requirements.txt            # Optional Python dependencies (matplotlib, reportlab)
-├── .gitignore                  # Git exclusion rules
+├── .gitignore                  # Git exclusion rules (binaries, datasets, caches)
 └── LICENSE                     # MIT License
 ```
 
 ---
 
-## 💻 Prerequisites & Build Guide
+## Build Instructions
 
 ### Prerequisites
-- **Linux Environment**: Native Linux (Ubuntu 22.04/24.04 recommended) or Windows WSL2.
-- **Compiler**: `gcc` with C11 support and POSIX threads (`-pthread`).
-- **Build System**: GNU `make`.
-- **Python**: Python 3.10+ (Standard library only; `matplotlib` optional for graphs).
+- **Operating System**: Linux (Ubuntu 22.04/24.04 recommended) or Windows with WSL2.
+- **Compiler**: `gcc` supporting C11 and POSIX threads (`-pthread`).
+- **Build Utility**: GNU `make`.
+- **Python**: Python 3.10+ (Standard library for orchestration; `matplotlib` optional for plotting).
 
-### Compilation
-Each case folder is completely independent and compiles with strict flags (`-Wall -Wextra -Wpedantic -Werror`):
+### Compiling All Modules
+Each case directory compiles independently using its own Makefile:
 
 ```bash
 make -C Part1
@@ -264,96 +257,86 @@ make -C Part2_Case2
 make -C Part2_Case2_Enhanced
 ```
 
-To clean all compiled binaries:
+To clean compiled binaries:
 ```bash
-make -C Part1 clean && make -C Part2_Case1 clean && make -C Part2_Case2 clean && make -C Part2_Case2_Enhanced clean
+make -C Part1 clean
+make -C Part2_Case1 clean
+make -C Part2_Case2 clean
+make -C Part2_Case2_Enhanced clean
 ```
 
 ---
 
-## 🚀 Running on a Single Linux Computer
+## Running on a Single Computer (Loopback)
 
-You can demonstrate all features locally on loopback (`127.0.0.1`) using two terminal windows.
+You can run both server and client on `127.0.0.1` using two terminal windows.
 
-### 1. Prepare a Demonstration Dataset
-Create a small test dataset directory with 10 topics or use `make_subset.py`:
+### 1. Create a Test Dataset Directory
 ```bash
 mkdir -p demo_dataset/cane demo_dataset/gatto
-# Place sample images or binary files into demo_dataset/cane/
-head -c 2097152 /dev/urandom > demo_dataset/cane/sample1.bin
-head -c 1048576 /dev/urandom > demo_dataset/cane/sample2.bin
+# Generate sample test files
+head -c 2097152 /dev/urandom > demo_dataset/cane/file1.bin
+head -c 1048576 /dev/urandom > demo_dataset/cane/file2.bin
+head -c 524288  /dev/urandom > demo_dataset/gatto/fileA.bin
 ```
 
 ### 2. Run Part 1 (Baseline)
 ```bash
-# Terminal 1 (Server):
+# Terminal 1: Start Server on port 9000
 Part1/server 9000 ./demo_dataset multi
 
-# Terminal 2 (Client):
+# Terminal 2: Run Client to fetch topic "cane"
 Part1/client 127.0.0.1 9000 cane ./downloads_p1
 ```
 
 ### 3. Run Part 2 Case 2 (Fault Injection + Checkpoint Resume)
-Introduce a **10% fault injection probability** per 64 KiB block ($p = 0.1$):
+Launch the server with a **10% failure probability** ($p = 0.10$ per 64 KiB block):
 ```bash
-# Terminal 1 (Server):
-Part2_Case2/server 9000 ./demo_dataset 0.1
+# Terminal 1: Start Server with p=0.10
+Part2_Case2/server 9000 ./demo_dataset 0.10
 
-# Terminal 2 (Client):
+# Terminal 2: Run Client
 Part2_Case2/client 127.0.0.1 9000 cane ./downloads_p2
 ```
-*Observe the client detecting mid-frame disconnections, outputting `[RESUME]`, and continuing from the confirmed file and byte offset without re-downloading completed chunks.*
+*The client detects connection drops, preserves confirmed byte offsets, reconnects, and completes the transfer with minimal redundant data.*
 
 ### 4. Run Part 2 Case 2 Enhanced (Parallel Multi-Lane)
-Run with **4 concurrent TCP lanes**:
+Run the client with **4 concurrent TCP connections**:
 ```bash
-# Terminal 1 (Server):
+# Terminal 1: Start Enhanced Server with p=0.05
 Part2_Case2_Enhanced/server 9000 ./demo_dataset 0.05
 
-# Terminal 2 (Client):
+# Terminal 2: Run Client with 4 lanes
 Part2_Case2_Enhanced/client 127.0.0.1 9000 cane ./downloads_enhanced 4
 ```
 
 ---
 
-## 🌐 Running Across Three Physical Linux Computers
+## Running Across Three Computers (LAN / Wi-Fi)
 
-The system includes a dedicated distributed orchestrator (`Tools/lan.py`) designed for physical local area networks (e.g., three Linux laptops or Windows WSL2 instances connected via Wi-Fi):
-
-- **PC A**: Hosts the C Server and the Python HTTP Coordinator.
-- **PC B**: Client Node running worker instances.
-- **PC C**: Client Node running worker instances.
-
-```
-       +---------------------------------------------+
-       |           PC A (Server / Coordinator)       |
-       |  IPv4: 192.168.1.50                         |
-       |  TCP 9000 (Data) | TCP 9101 (HTTP Control)  |
-       +---------------------------------------------+
-                            |
-           +----------------+----------------+
-           |                                 |
-+----------------------+          +----------------------+
-|  PC B (Client Node)  |          |  PC C (Client Node)  |
-|  lan.py agent        |          |  lan.py agent        |
-+----------------------+          +----------------------+
-```
+The system includes a distributed testing harness (`Tools/lan.py`) for coordinating experiments across three separate Linux systems on a local network:
+- **PC A (Server / Coordinator)**: Runs the C server and Python coordinator HTTP API.
+- **PC B (Client Node 1)**: Runs client agent processes.
+- **PC C (Client Node 2)**: Runs client agent processes.
 
 ### Step 1: Preflight Network Check
-On PC A, start the diagnostic listeners:
+On PC A, launch diagnostic probe listeners on ports 9000 (data) and 9101 (control):
 ```bash
 python3 Tools/network_check.py serve --ports 9000 9101
 ```
-From PC B and PC C, test end-to-end TCP reachability:
+
+From PC B and PC C, test TCP connectivity to PC A:
 ```bash
-python3 Tools/network_check.py check --server-ip 192.168.1.50 --ports 9000 9101
+python3 Tools/network_check.py check --server-ip <PC_A_IP> --ports 9000 9101
 ```
+Ensure both ports report `PASS` before proceeding.
 
 ### Step 2: Start Coordinator on PC A
+Stop the probe (`Ctrl+C`), then start the coordinator:
 ```bash
 python3 Tools/lan.py server \
   --dataset /path/to/dataset \
-  --ip 192.168.1.50 \
+  --ip <PC_A_IP> \
   --topic cane \
   --results Results/lan_experiment_01
 ```
@@ -361,84 +344,90 @@ python3 Tools/lan.py server \
 ### Step 3: Connect Agents on PC B and PC C
 ```bash
 # On PC B:
-python3 Tools/lan.py agent --server http://192.168.1.50:9101 --node B --results Results/node_B
+python3 Tools/lan.py agent --server http://<PC_A_IP>:9101 --node B --results Results/node_B
 
 # On PC C:
-python3 Tools/lan.py agent --server http://192.168.1.50:9101 --node C --results Results/node_C
+python3 Tools/lan.py agent --server http://<PC_A_IP>:9101 --node C --results Results/node_C
 ```
-The coordinator synchronizes timestamps, executes test batches across all cases and fault rates, verifies every downloaded file with SHA-256, and outputs consolidated performance metrics.
+
+The coordinator will synchronize system clocks, run the full test schedule across all modes, perform end-to-end SHA-256 verification on all downloads, and save consolidated CSV metrics to `Results/lan_experiment_01/summary.csv`.
 
 ---
 
-## ⚙️ Configuration & Troubleshooting
+## Configuration & Runtime Tuning
 
 ### Environment Variables
-The implementation supports non-intrusive runtime tuning via environment variables:
-- `FT_MAX_ATTEMPTS`: Maximum reconnect attempts per lane (default: `1000`, range: `1..100000`).
+The following environment variables adjust runtime parameters without modifying CLI interfaces:
+- `FT_MAX_ATTEMPTS`: Maximum reconnection attempts per lane (default: `1000`, range: `1..100000`).
 - `FT_IO_TIMEOUT`: Socket inactivity timeout in seconds (default: `300`, range: `1..3600`).
-- `FT_STARTUP_TIMEOUT`: Server dataset indexing limit in seconds (default: `600`).
+- `FT_STARTUP_TIMEOUT`: Maximum seconds allowed for server dataset scanning at startup (default: `600`).
 
-### Common Issues & Resolutions
-1. **`Address already in use` (`EADDRINUSE`)**:
-   - Cause: A previous server instance is still bound to the port.
-   - Fix: Identify and kill the stale process: `ss -ltnp | grep 9000` followed by `kill -9 <PID>`.
-2. **WSL2 Cross-Machine Reachability**:
-   - Cause: Windows WSL2 runs in a virtualized NAT adapter by default.
-   - Fix: Run `Tools/windows/Setup-WSL-Network.ps1` in an Administrator PowerShell on PC A to configure port proxy forwarding.
-3. **`ERR dataset_changed_restart_server`**:
-   - Cause: Files in the topic directory were modified or touched after server startup.
-   - Fix: Restart the server to rebuild the canonical FNV-1a topic manifest.
+### Troubleshooting
+- **`Address already in use` (`EADDRINUSE`)**: A previously killed server is still occupying the port. Identify and terminate the PID:
+  ```bash
+  ss -ltnp | grep 9000
+  kill -9 <PID>
+  ```
+- **WSL2 Cross-Machine Connectivity**: In NAT mode, Windows does not expose WSL2 ports directly to the local Wi-Fi subnet. Run `Tools/windows/Setup-WSL-Network.ps1` in an Administrator PowerShell on PC A to set up the portproxy rules.
+- **`ERR dataset_changed_restart_server`**: A file within the topic directory was modified, added, or removed after the server indexed the manifest. Restart the server to generate a new topic hash.
 
 ---
 
-## 📊 Evaluation & Benchmark Results
+## Experimental Evaluation & Results
 
-The system was benchmarked across **60 controlled runs** evaluating useful goodput and redundancy overhead under varying client concurrency and fault probabilities:
+The system was evaluated using **60 controlled experimental batches** across single-machine loopback and multi-node network configurations. Every download was verified using SHA-256 checksums against the source files.
 
-| Experiment Setting | Clients | Fault Probability ($p$) | Useful Goodput (MiB/s) | Redundant Payload (%) | SHA-256 Verified |
+### Summary Metrics Table
+
+| Operational Case | Clients | Failure Probability ($p$) | Goodput (MiB/s) | Redundant Payload (%) | SHA-256 Status |
 |---|---|---|---|---|---|
-| **Part 1 Single-Server** | 1 | 0.0 | ~126.0 MiB/s | 0.0% | 100% PASS |
-| **Part 1 Multi-Server** | 2 | 0.0 | ~238.9 MiB/s | 0.0% | 100% PASS |
-| **Part 2 Case 1 (Restart)** | 4 | 0.03 (Low) | Degraded | **> 150%** | 100% PASS |
-| **Part 2 Case 2 (Resume)** | 4 | 0.20 (High) | Stable | **< 3.2%** | 100% PASS |
-| **Part 2 Enhanced (Parallel)**| 4 | 0.20 (High) | **Peak Throughput** | **< 2.1%** | 100% PASS |
+| **Part 1 Single Server** | 1 | 0.00 | ~126.0 MiB/s | 0.0% | Verified |
+| **Part 1 Multi Server** | 2 | 0.00 | ~238.9 MiB/s | 0.0% | Verified |
+| **Part 2 Case 1 (Restart)** | 4 | 0.03 | Degraded | **> 150%** | Verified |
+| **Part 2 Case 2 (Resume)** | 4 | 0.20 | Stable | **< 3.2%** | Verified |
+| **Part 2 Enhanced (Parallel)**| 4 | 0.20 | **Highest** | **< 2.1%** | Verified |
 
-### Visual Performance Comparison
+### Key Experimental Findings
+1. **Redundancy Overhead**: Case 1 (Restart) experiences exponential payload overhead as failure probability $p$ increases, because each dropped connection forces a full re-download of all previous files. Case 2 (Resume) keeps redundancy below 4% even under high fault rates ($p = 0.20$).
+2. **Parallel Stream Scalability**: In Case 2 Enhanced, striped multi-lane streaming over multiple TCP sockets maintains higher link utilization and shorter makespan, as unaffected lanes continue streaming while a single dropped lane reconnects.
 
-```
-+---------------------------------------------------------------------------------+
-| Useful Goodput vs. Fault Probability                                            |
-|                                                                                 |
-| Goodput (MiB/s)                                                                 |
-|   |                                                                             |
-|   |  *===================* (Enhanced: Parallel Resume maintains highest goodput)|
-|   |  *-------------------* (Case 2: Checkpoint Resume remains resilient)        |
-|   |                                                                             |
-|   |  \                                                                          |
-|   |   \                                                                         |
-|   |    *.................* (Case 1: Restart drops sharply due to re-downloads)  |
-|   +----------------------------------------------------> Failure Probability p  |
-+---------------------------------------------------------------------------------+
-```
-*(High-resolution generated plots are preserved in [`docs/diagrams/`](docs/diagrams/)).*
+Detailed plots generated from the 60-run benchmark are available in the [`docs/diagrams/`](docs/diagrams/) directory:
+- `Part1_throughput.png` — Goodput vs. concurrent client processes.
+- `Part2_comparison_throughput.png` — Goodput across all three recovery modes vs. failure probability.
+- `Part2_comparison_overhead.png` — Payload redundancy percentage vs. failure probability.
 
 ---
 
-## 📷 Visual Screenshots & Logs
+## Sample Terminal Output
 
-### Terminal Demonstration Capture
+### Server Fault Injection Log (`stderr`)
 ```text
-Topic: cane
-Mode : Case 2 - Session Management
+[FAULT INJECTED]
+Session                : 1394829104928174
+Lane                   : 0/2
+Topic                  : cane
+File index             : 3 (0-based)
+Last confirmed offset  : 131072 bytes
+Disconnect file offset : 163840 bytes
+Block size             : 65536 bytes
+```
 
-[START] file_index=0 offset=0 bytes
-[##############################] 100% | 1.00 / 1.00 MiB | File 8/8 | offset=131072
+### Client Resumption & Summary Log (`stderr`)
+```text
+[DISCONNECT] Connection interrupted during transfer
+Lane                  : 0
+Attempt               : 2
+Last confirmed file   : 3
+Last confirmed offset : 131072 bytes
+Data this attempt     : 0.03 MiB
+[RESUME] Keeping last confirmed checkpoint.
+Next attempt          : file_index=3 offset=131072 bytes
 
 ================ Transfer Summary ================
 Topic                  : cane
 Status                 : SUCCESS
-Attempts               : 3
-Connections/Lanes      : 1
+Attempts               : 3 (total across lanes)
+Connections/Lanes      : 2
 Useful data            : 1.00 MiB
 Total payload received : 1.03 MiB
 Redundant data         : 0.03 MiB
@@ -450,20 +439,19 @@ Resume mode            : Checkpoint resume
 
 ---
 
-## 🔮 Future Enhancements
+## Technical Considerations & Future Work
 
-- [ ] **Persistent Checkpoint Store**: Offload session tables to an embedded SQLite or LMDB datastore to survive server process restarts.
-- [ ] **TLS / Secure Sockets**: Wrap transport sessions in OpenSSL / mbedTLS to provide confidentiality and endpoint authentication.
-- [ ] **Dynamic Window Congestion Control**: Implement application-level pacing for parallel lanes to adapt to bottleneck bandwidth.
-- [ ] **UDP / QUIC Support**: Port the chunking engine to QUIC streams to eliminate Head-of-Line blocking over lossy Wi-Fi links.
+1. **Persistent Session Storage**: The current session table resides in process RAM. If the server process itself crashes or terminates, active checkpoints are lost. Backing the session table with an embedded key-value store (e.g., SQLite or LMDB) would provide crash-resilient persistence across server restarts.
+2. **TLS Transport Security**: Encrypting the socket stream using TLS (via OpenSSL or mbedTLS) would protect payload data and control commands against passive network inspection and tampering.
+3. **Transport Protocol Exploration (UDP / QUIC)**: Implementing the chunking and retransmission logic over UDP or QUIC would eliminate TCP Head-of-Line blocking across lossy wireless links.
 
 ---
 
-## 👥 Academic Context & Contributors
+## Academic Context & Attribution
 
-- **Course**: IT305 Computer Networks Lab (B.Tech)
-- **Academic Groups**: Group 099 & Group 107
-- **Original Assignment**: Fault-Tolerant Topic-Based File Distribution
-- **Dataset Reference**: [Animals10 Dataset](https://www.kaggle.com/datasets/alessiocorrado99/animals10)
+- **Institution**: B.Tech Computer Science / Information Technology Coursework
+- **Subject**: IT305 Computer Networks Lab
+- **Groups**: Group 099 & Group 107
+- **Dataset Reference**: [Animals10 Dataset](https://www.kaggle.com/datasets/alessiocorrado99/animals10) (Kaggle)
 
-*All original networking logic and protocol implementations have been preserved. This repository is formatted for professional software engineering portfolio presentation.*
+*The original academic submission report is preserved in [`FinalReport_Group_099_107.pdf`](FinalReport_Group_099_107.pdf). The original coursework README is preserved in [`docs/ACADEMIC_README.md`](docs/ACADEMIC_README.md).*
